@@ -41,10 +41,9 @@
 30. [Mantenimiento](#mantenimiento)
 31. [Limitaciones Actuales](#limitaciones-actuales)
 32. [Posibles Evoluciones](#posibles-evoluciones)
-33. [Guion para Presentación](#guion-para-presentación)
-34. [Preguntas Frecuentes](#preguntas-frecuentes)
-35. [Glosario](#glosario)
-36. [Resumen Final](#resumen-final)
+33. [Preguntas Frecuentes](#preguntas-frecuentes)
+34. [Glosario](#glosario)
+35. [Resumen Final](#resumen-final)
 
 ---
 
