@@ -1,0 +1,7 @@
+httpx==0.25.2
+aiosmtplib==3.0.1
+aiohttp==3.9.1
+python-dotenv==1.0.0
+msal==1.28.0
+pytest==7.4.3
+pytest-asyncio==0.21.1
