@@ -12,28 +12,34 @@ from logger import logger
 
 
 class SMTPEmailSender:
-    """Sends emails via SMTP (Office 365 compatible)."""
+    """Sends emails via SMTP (Office 365 compatible, or on-premises relay)."""
 
     def __init__(
         self,
         smtp_server: str = "smtp.office365.com",
         smtp_port: int = 587,
         from_address: str = config.EMAIL_FROM,
-        password: str = config.EMAIL_PASSWORD,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        use_tls: bool = True,
     ):
         """
         Initialize SMTP email sender.
 
         Args:
             smtp_server: SMTP server address
-            smtp_port: SMTP port (usually 587 for TLS)
+            smtp_port: SMTP port (usually 587 for TLS, 25/465 for relay)
             from_address: Sender email address
-            password: Sender password (app password for Office 365)
+            username: SMTP username (optional for relay without auth)
+            password: SMTP password (optional for relay without auth)
+            use_tls: Whether to use STARTTLS (True) or SSL (False)
         """
         self.smtp_server = smtp_server
         self.smtp_port = smtp_port
         self.from_address = from_address
+        self.username = username
         self.password = password
+        self.use_tls = use_tls
 
     async def send(
         self,
@@ -80,35 +86,37 @@ class SMTPEmailSender:
             return False
 
     async def _send_via_smtp(self, to_address: str, message: str) -> bool:
-        """Send email using SMTP with STARTTLS (Exchange Online compatible)."""
+        """Send email using SMTP (STARTTLS, SSL, or plain relay)."""
         try:
-            # For port 587: connect without TLS, then STARTTLS
             async with aiosmtplib.SMTP(
                 hostname=self.smtp_server,
                 port=self.smtp_port,
                 timeout=30,
-                use_tls=False,  # Important: don't use TLS on connect for port 587
+                use_tls=False,  # Don't use TLS on connect; handle it manually
             ) as smtp:
-                # Step 1: Initial greeting
                 logger.debug(f"[SMTP] Connected to {self.smtp_server}:{self.smtp_port}")
 
-                # Step 2: EHLO
+                # Step 1: EHLO
                 await smtp.ehlo()
                 logger.debug("[SMTP] EHLO sent")
 
-                # Step 3: STARTTLS (required for port 587)
-                await smtp.starttls()
-                logger.debug("[SMTP] STARTTLS initiated")
+                # Step 2: STARTTLS if enabled
+                if self.use_tls:
+                    await smtp.starttls()
+                    logger.debug("[SMTP] STARTTLS initiated")
 
-                # Step 4: EHLO after STARTTLS (Exchange Online requirement)
-                await smtp.ehlo()
-                logger.debug("[SMTP] EHLO sent after STARTTLS")
+                    # EHLO after STARTTLS (required for some servers)
+                    await smtp.ehlo()
+                    logger.debug("[SMTP] EHLO sent after STARTTLS")
 
-                # Step 5: Authenticate with app password
-                await smtp.login(self.from_address, self.password)
-                logger.debug(f"[SMTP] Authenticated as {self.from_address}")
+                # Step 3: Authenticate if credentials provided
+                if self.username and self.password:
+                    await smtp.login(self.username, self.password)
+                    logger.debug(f"[SMTP] Authenticated as {self.username}")
+                else:
+                    logger.debug("[SMTP] No authentication (relay mode)")
 
-                # Step 6: Send message
+                # Step 4: Send message
                 await smtp.send_message(
                     MIMEText(message, "html"),
                     sender=self.from_address,
@@ -116,7 +124,7 @@ class SMTPEmailSender:
                 )
                 logger.info(f"[SMTP] Email sent to {to_address}")
 
-                # Step 7: Proper connection close
+                # Step 5: Close connection
                 await smtp.quit()
                 logger.debug("[SMTP] Connection closed")
 
@@ -135,14 +143,16 @@ class SMTPEmailSender:
 
 async def send_roadmap_email(html_content: str) -> bool:
     """
-    Send roadmap update email.
+    Send roadmap update email using configured email sender.
 
     Args:
         html_content: HTML content to send
 
     Returns:
-        True if successful (or dry_run mode)
+        True if successful (or no-op sender)
     """
+    from email_factory import create_email_sender
+
     # Build email body
     email_body = f"""<div style="font-family: 'Segoe UI', Tahoma, sans-serif; max-width: 850px; margin: auto; background-color: #ffffff; padding: 20px;">
     <div style="background-color: #0078d4; color: #ffffff; padding: 15px 25px; border-radius: 8px; margin-bottom: 25px; font-size: 22px; font-weight: bold; display: flex; align-items: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
@@ -151,14 +161,9 @@ async def send_roadmap_email(html_content: str) -> bool:
     {html_content}
 </div>"""
 
-    # Check for dry run mode
-    if config.DRY_RUN:
-        logger.info(f"DRY_RUN: Email would be sent to {config.EMAIL_TO}")
-        logger.debug(f"Email subject: {config.EMAIL_SUBJECT}")
-        logger.debug(f"Email body length: {len(email_body)} bytes")
-        return True
+    # Create appropriate sender based on configuration
+    sender = create_email_sender()
 
-    sender = SMTPEmailSender()
     return await sender.send(
         to_address=config.EMAIL_TO,
         subject=config.EMAIL_SUBJECT,

@@ -1099,140 +1099,266 @@ Cada elemento del roadmap se muestra como una tarjeta con:
 
 ## EMAIL Y ENVÍO
 
-#### 🔄 PREPARADO PARA FUTURO: OAuth 2.0
+### Arquitectura Abstracta de Envío
+
+La aplicación implementa un patrón de abstracción para soportar múltiples mecanismos de envío:
 
 ```python
-# src/oauth_manager.py (preparado, no activo)
-# Usa Microsoft Graph API (/me/sendMail)
-# Requiere: OAuth App Registration en Azure AD
-# Biblioteca: MSAL
+# src/email_factory.py
+# Factory pattern para seleccionar sender según configuración
+
+def create_email_sender():
+    if config.DRY_RUN or config.EMAIL_MODE == "none":
+        return NoOpEmailSender()
+    elif config.EMAIL_MODE == "smtp":
+        return SMTPEmailSender(config)
+    elif config.EMAIL_MODE == "graph":
+        return GraphEmailSender(OAuthManager(config))
 ```
 
-Flujo OAuth:
-```
-Obtener Token → Graph API → /me/sendMail → Envío
-```
+### Matriz de Modos de Envío
 
-### Estado Actual
+| Modo | Archivo | Descripción | Uso |
+|------|---------|-------------|-----|
+| **none** | `no_op_email_sender.py` | Sin envío (testing) | DRY_RUN=true |
+| **smtp** | `email_sender.py` | SMTP genérico | Office 365, Exchange, relay |
+| **graph** | `graph_sender.py` | Microsoft Graph OAuth 2.0 | Azure/Entra ID |
 
-La documentación `CONFIGURACION_EMAIL_M365.md` explica cómo configurar OAuth cuando se dispongan permisos en Azure AD.
-
-### Implementación SMTP (Actual)
+### 1. NoOp Sender (Testing)
 
 ```python
-# src/email_sender.py - línea 82-123
-async def _send_via_smtp(self, to_address: str, message: str) -> bool:
-    """Send email using SMTP with STARTTLS."""
-    try:
-        async with aiosmtplib.SMTP(
-            hostname="smtp.office365.com",
-            port=587,
-            timeout=30,
-            use_tls=False  # Importante: no TLS en conexión inicial
-        ) as smtp:
-            # 1. Conexión inicial
-            logger.debug(f"Connected to smtp.office365.com:587")
-            
-            # 2. EHLO (Extended HELLO)
-            await smtp.ehlo()
-            
-            # 3. STARTTLS (inicia encriptación)
-            await smtp.starttls()
-            
-            # 4. EHLO nuevamente (requerimiento Exchange)
-            await smtp.ehlo()
-            
-            # 5. Autenticación
-            await smtp.login(self.from_address, self.password)
-            
-            # 6. Envío del mensaje
-            await smtp.send_message(message, sender=..., recipients=[...])
-            
-            # 7. Cierre limpio
-            await smtp.quit()
-            
-            return True
-            
-    except aiosmtplib.SMTPAuthenticationError:
-        logger.error("SMTP authentication failed")
-        return False
-    except Exception as e:
-        logger.error(f"Email send error: {e}")
-        return False
+# src/no_op_email_sender.py
+class NoOpEmailSender:
+    async def send(self, to_address: str, subject: str, body_html: str) -> bool:
+        logger.info(f"[NoOp] Email would be sent to {to_address}")
+        return True  # Simula éxito sin enviar
 ```
+
+Usado cuando:
+- `DRY_RUN=true` (ignora EMAIL_MODE)
+- `EMAIL_MODE=none` + `DRY_RUN=false`
+
+Comportamiento:
+- ✅ Registra en logs
+- ❌ No conecta a servidor
+- ❌ No marca SQLite
+- No valida credenciales
+
+### 2. SMTP Sender (Flexible)
+
+Soporta:
+- **Office 365 autenticado** (puerto 587, STARTTLS)
+- **Exchange relay** (puerto 25, sin auth)
+- **Servidores genéricos** SMTP
+
+```python
+# src/email_sender.py
+class SMTPEmailSender:
+    def __init__(
+        self,
+        smtp_server: str,
+        smtp_port: int,
+        from_address: str,
+        username: Optional[str],    # ← Opcional
+        password: Optional[str],    # ← Opcional
+        use_tls: bool,
+    ):
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.username = username
+        self.password = password
+        self.use_tls = use_tls
+
+    async def send(self, to_address: str, subject: str, body_html: str) -> bool:
+        # Conecta, autentica (si credenciales), envía, cierra
+```
+
+Configuración:
+
+```env
+EMAIL_MODE=smtp
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=user@empresa.com  # ← Opcional
+SMTP_PASSWORD=password          # ← Opcional
+```
+
+Casos de uso:
+
+| Caso | SMTP_HOST | Puerto | TLS | Auth |
+|------|-----------|--------|-----|------|
+| Office 365 | smtp.office365.com | 587 | Sí | Sí |
+| Exchange relay | mail.empresa.local | 25 | No | No |
+| Gmail | smtp.gmail.com | 587 | Sí | Sí |
+
+### 3. Graph Sender (OAuth 2.0)
+
+```python
+# src/graph_sender.py
+class GraphEmailSender:
+    def __init__(self, oauth_manager: OAuthManager):
+        self.oauth_manager = oauth_manager
+        self.graph_endpoint = "https://graph.microsoft.com/v1.0"
+
+    async def send(self, to_address: str, subject: str, html_body: str) -> bool:
+        token = self.oauth_manager.get_token()
+        # POST https://graph.microsoft.com/v1.0/me/sendMail
+        # Retorna True si 202 (Accepted)
+```
+
+Configuración:
+
+```env
+EMAIL_MODE=graph
+AZURE_TENANT_ID=xxxxxxxx-...
+AZURE_CLIENT_ID=yyyyyyyy-...
+OAUTH_REDIRECT_URI=http://localhost
+```
+
+Autenticación:
+1. Primera ejecución: abre navegador para login (interactive)
+2. Token se cachea en `~/.m365_roadmap/token_cache.json`
+3. Siguientes ejecuciones: reutiliza token (silent mode)
+4. Si expira: renovación automática
+
+Ver `CONFIGURACION_EMAIL_M365.md` para instrucciones completas de Azure/Entra ID.
+
+### Validación Condicional de Configuración
+
+La validación depende de `DRY_RUN` y `EMAIL_MODE`:
+
+```python
+# src/config.py
+def _validate_env_vars(self) -> None:
+    # Si DRY_RUN=true → Sin validación email
+    if self.DRY_RUN:
+        logger.debug("DRY_RUN=true: skipping email validation")
+        return
+    
+    # Si DRY_RUN=false → Validar según EMAIL_MODE
+    if self.EMAIL_MODE == "none":
+        # Solo valida EMAIL_FROM, EMAIL_TO
+        pass
+    elif self.EMAIL_MODE == "smtp":
+        # Valida: SMTP_HOST (obligatorio)
+        self._validate_smtp_config()
+    elif self.EMAIL_MODE == "graph":
+        # Valida: AZURE_TENANT_ID, AZURE_CLIENT_ID
+        self._validate_graph_config()
+```
+
+Matriz de validación:
+
+| Variable | DRY_RUN | none | smtp | graph |
+|----------|---------|------|------|-------|
+| EMAIL_FROM | ❌ | ✅ | ✅ | ✅ |
+| EMAIL_TO | ❌ | ✅ | ✅ | ✅ |
+| SMTP_HOST | ❌ | ❌ | ✅ | ❌ |
+| SMTP_USERNAME | ❌ | ❌ | ⭕ | ❌ |
+| SMTP_PASSWORD | ❌ | ❌ | ⭕ | ❌ |
+| AZURE_TENANT_ID | ❌ | ❌ | ❌ | ✅ |
+| AZURE_CLIENT_ID | ❌ | ❌ | ❌ | ✅ |
+
+Leyenda: ✅=Obligatoria, ⭕=Opcional, ❌=No necesaria
 
 
 ## CONFIGURACIÓN
 
 ### Sistema de Configuración
 
-La aplicación usa un sistema centralizado:
+La aplicación usa un sistema centralizado con validación condicional:
 
 ```python
 # src/config.py
 class Config:
-    """Application configuration."""
+    """Application configuration with conditional validation."""
     
     def __init__(self):
-        # 1. Busca .env
         env_path = self._find_env_file()
-        # 2. Carga variables
         load_dotenv(dotenv_path=env_path)
-        # 3. Lee variables de entorno
         self._load_env_vars()
-        # 4. Valida que existan requeridas
-        self._validate_env_vars()
+        self._validate_env_vars()  # ← Depende de DRY_RUN y EMAIL_MODE
 ```
 
-### Variables de Entorno (.env)
+### Variables Principales de Entorno (.env)
+
+#### Ejecución y Modo Email
 
 ```env
-# OAUTH Configuration (pendiente implementación)
-OAUTH_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-OAUTH_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-OAUTH_REDIRECT_URI=http://localhost
+# Dry run mode
+DRY_RUN=false               # true para no enviar emails
 
-# Email Configuration
+# Email mode selector
+EMAIL_MODE=none             # none, smtp, o graph
+```
+
+#### Email Común (todos los modos)
+
+```env
 EMAIL_FROM=your.email@empresa.com
 EMAIL_TO=recipient@empresa.com
-EMAIL_PASSWORD=your_app_password
+```
 
-# Optional: Roadmap filtering
+#### SMTP (si EMAIL_MODE=smtp)
+
+```env
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=your.email@empresa.com    # Opcional para relay
+SMTP_PASSWORD=your_app_password         # Opcional para relay
+```
+
+#### Graph/OAuth (si EMAIL_MODE=graph)
+
+```env
+AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+OAUTH_REDIRECT_URI=http://localhost
+```
+
+#### Opcionales
+
+```env
+# Roadmap filtering
 RSS_MONTHS_BACK=1           # Default: 1 mes = 30 días
 
-# Optional: Logging
-LOG_LEVEL=INFO              # DEBUG, INFO, WARNING, ERROR
-
-# Optional: Testing
-DRY_RUN=false               # true para ensayo sin email
+# Logging
+LOG_LEVEL=INFO              # DEBUG, INFO, WARNING, ERROR (default: INFO)
 ```
 
-### Validación
-
-Las variables REQUERIDAS son:
+### Validación Dinámica
 
 ```python
-# src/config.py - línea 75-84
-required = ["EMAIL_TO", "EMAIL_FROM", "EMAIL_PASSWORD"]
+# src/config.py - _validate_env_vars()
 
-missing = [var for var in required if not getattr(self, var, "")]
-if missing:
-    raise ConfigError(
-        f"Missing required environment variables: {', '.join(missing)}"
-    )
+def _validate_env_vars(self) -> None:
+    # 1. Valida EMAIL_MODE es válido
+    if self.EMAIL_MODE not in {"none", "smtp", "graph"}:
+        raise ConfigError(f"Invalid EMAIL_MODE: {self.EMAIL_MODE}")
+    
+    # 2. Si DRY_RUN=true → Sin validación email
+    if self.DRY_RUN:
+        logger.debug("DRY_RUN=true: skipping email validation")
+        return
+    
+    # 3. Si DRY_RUN=false → Valida según EMAIL_MODE
+    # Valida EMAIL_FROM, EMAIL_TO (común a todos)
+    # Luego valida mode-específicas
+    
+    if self.EMAIL_MODE == "smtp":
+        self._validate_smtp_config()
+    elif self.EMAIL_MODE == "graph":
+        self._validate_graph_config()
 ```
 
-Si falta alguna:
-
-```
-[ERROR] Configuration error: Missing required environment variables: 
-EMAIL_PASSWORD. Please check your .env file at ...
-```
+**IMPORTANTE:** Con `DRY_RUN=true` NO se exigen credenciales de correo.
 
 ### Constantes de Configuración (hardcoded)
 
 ```python
-# src/config.py - línea 86-116
+# src/config.py
 
 # MRC MCP
 MCP_ENDPOINT = "https://www.microsoft.com/releasecommunications/mcp"
@@ -1246,10 +1372,8 @@ ALLOWED_PRODUCTS = {
     "OneDrive",
 }
 
-# SMTP
+# Email
 EMAIL_SUBJECT = "Roadmap Microsoft 365 - Actualización Mensual"
-SMTP_SERVER = "smtp.office365.com"
-SMTP_PORT = 587
 
 # Directorios
 DB_PATH = Path("data/processed_items.db")
@@ -1260,6 +1384,48 @@ LOG_FILE = LOG_DIR / "app.log"
 HTTP_TIMEOUT = 30
 HTTP_RETRIES = 3
 HTTP_BACKOFF_FACTOR = 1.5
+```
+
+### Ejemplo de Configuraciones Completas
+
+**Desarrollo (sin email):**
+```env
+DRY_RUN=true
+EMAIL_MODE=none
+```
+
+**SMTP Office 365:**
+```env
+DRY_RUN=false
+EMAIL_MODE=smtp
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=team@empresa.com
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=roadmap@empresa.com
+SMTP_PASSWORD=AbCd!234XyZw567*aBcD
+```
+
+**SMTP Relay (sin auth):**
+```env
+DRY_RUN=false
+EMAIL_MODE=smtp
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=team@empresa.com
+SMTP_HOST=mail.empresa.local
+SMTP_PORT=25
+SMTP_USE_TLS=false
+```
+
+**Graph (OAuth):**
+```env
+DRY_RUN=false
+EMAIL_MODE=graph
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=team@empresa.com
+AZURE_TENANT_ID=12345678-...
+AZURE_CLIENT_ID=87654321-...
 ```
 
 ---

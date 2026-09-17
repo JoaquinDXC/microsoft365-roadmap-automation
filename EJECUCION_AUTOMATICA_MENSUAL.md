@@ -70,9 +70,11 @@ Finalizar
 
 ### Requisitos Previos
 
-- OAuth ya configurado (ver `CONFIGURACION_EMAIL_M365.md`)
-- Token cache existente en `~/.m365_roadmap/token_cache.json`
-- `.env` completamente configurado
+- Método de envío seleccionado:
+  - **SMTP:** Configuración de servidor SMTP
+  - **Graph/OAuth:** Token cache en `~/.m365_roadmap/token_cache.json`
+  - **No envío:** Configuración mínima (no requiere credenciales)
+- `.env` configurado según tu `EMAIL_MODE`
 - Dependencias instaladas: `pip install -r requirements.txt`
 - Acceso administrativo a la máquina
 

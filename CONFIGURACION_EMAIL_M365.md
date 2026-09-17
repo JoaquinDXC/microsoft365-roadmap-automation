@@ -1,611 +1,553 @@
-# Configuración de Envío de Email - Microsoft 365 (OAuth 2.0)
+# Configuración de Envío de Email - Múltiples Entornos
 
-**Versión:** 1.0  
-**Fecha:** 2026-09-16  
-**Estado:** Guía de próximos pasos (implementación pendiente)
-
----
-
-## ⚠️ ESTADO ACTUAL
-
-**IMPORTANTE:** El envío de correo mediante Microsoft 365 requiere permisos administrativos en Microsoft Entra ID (anteriormente Azure AD) para registrar la aplicación. Esta guía documenta los pasos necesarios para completar la configuración cuando esos permisos estén disponibles.
+**Versión:** 2.0  
+**Fecha:** 2026-09-17  
+**Estado:** Implementado - Soporta SMTP y Microsoft Graph
 
 ---
 
-## 1. OBJETIVO
+## 1. DESCRIPCIÓN GENERAL
 
-Configurar la aplicación para enviar reportes de roadmap de Microsoft 365 mediante:
+Esta aplicación soporta tres modos de envío de email para adaptarse a diferentes entornos:
 
-- **Protocolo:** OAuth 2.0 (autenticación moderna y segura)
-- **API:** Microsoft Graph (`/me/sendMail`)
-- **Biblioteca:** MSAL (Microsoft Authentication Library for Python)
-- **Tipo de aplicación:** Desktop/Local (sin servidor web)
-- **Permisos:** Delegados (`Mail.Send`)
+| Modo | Descripción | Entorno | Complejidad |
+|------|-------------|---------|------------|
+| **none** | Sin envío (testing) | Desarrollo | Mínima |
+| **smtp** | SMTP genérico | Producción (Exchange, Office 365) | Media |
+| **graph** | Microsoft Graph OAuth 2.0 | Producción (Entra ID/Azure) | Alta |
 
 ---
 
-## 2. ARQUITECTURA PREVISTA
+## 2. ARQUITECTURA DE ENVÍO
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Aplicación Python                           │
-│  (M365 Roadmap Automation - Desktop App Pattern)               │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ↓
-                 ┌──────────────────┐
-                 │  MSAL Library    │
-                 │  Token Cache     │
-                 └────────┬─────────┘
-                          │
-                  ┌───────┴──────┐
-                  │              │
-        ┌─────────▼────┐    ┌────▼──────────┐
-        │  First Login │    │ Cached Tokens │
-        │  Interactive │    │ (Silent Mode) │
-        │  Browser     │    └────┬──────────┘
-        └─────────┬────┘         │
-                  │              │
-                  └──────┬───────┘
-                         │
-                         ↓
-         ┌───────────────────────────────┐
-         │  Microsoft Graph API          │
-         │  POST /me/sendMail            │
-         │  Endpoint: graph.microsoft.com│
-         └───────────────┬───────────────┘
-                         │
-                         ↓
-         ┌───────────────────────────────┐
-         │  Email Enviado               │
-         │  Bandeja de salida usuario   │
-         └───────────────────────────────┘
+Configuración (EMAIL_MODE)
+         │
+    ┌────┴────┬──────────┬──────────┐
+    ↓         ↓          ↓          ↓
+  DRY_RUN    NONE       SMTP      GRAPH
+    │         │          │          │
+    └─ NoOpEmailSender ──┴─ SMTPEmailSender ─ GraphEmailSender
+                          │                    │
+                    ┌─────┴─────┐              │
+                    ↓           ↓              ↓
+            Office 365    On-Prem     Microsoft Graph
+            Exchange       SMTP       (OAuth 2.0)
+            Relay
 ```
 
-### Componentes Clave
+---
 
-| Componente | Descripción | Ubicación |
-|-----------|-------------|-----------|
-| **MSAL** | Microsoft Authentication Library | `src/oauth_manager.py` |
-| **OAuthManager** | Gestión de tokens y cache | `src/oauth_manager.py` |
-| **GraphEmailSender** | Cliente HTTP para Graph API | `src/graph_sender.py` |
-| **Token Cache** | Almacenamiento persistente | `~/.m365_roadmap/token_cache.json` (Windows: `%APPDATA%\` ) |
-| **Configuración** | Variables de entorno | `.env` |
+## 3. MODO 1: DRY_RUN + EMAIL_MODE=none (Development)
+
+### Descripción
+
+Para testing y desarrollo sin enviar correos reales. Usado por defecto.
+
+### Configuración en .env
+
+```env
+DRY_RUN=true
+EMAIL_MODE=none
+```
+
+### Comportamiento
+
+- ✅ Ejecuta flujo completo (MCP → Filtrado → HTML)
+- ❌ NO envía correos
+- ❌ NO exige configuración SMTP ni Graph
+- ❌ NO marca items como enviados en SQLite
+- 📁 Guarda preview HTML en `output/roadmap_preview.html`
+
+### Validación de Configuración
+
+- No se validan variables de correo
+- No se conecta a SMTP ni Graph
+
+### Cuándo usar
+
+- Instalación inicial
+- Testing de cambios
+- Validación del flujo MCP
+- Verificación de filtrados
 
 ---
 
-## 3. REQUISITOS PREVIOS
+## 4. MODO 2: EMAIL_MODE=none (Disabled Email)
 
-### Permisos Necesarios
+### Descripción
 
-⚠️ **Requiere:** Acceso administrativo a Microsoft Entra ID (Azure AD) de tu organización
+Deshabilita envío de correos pero ejecuta todo lo demás en modo normal.
 
-- Capacidad para registrar aplicaciones
-- Capacidad para asignar permisos delegados
-- Acceso a Azure Portal → Azure AD → App registrations
+### Configuración en .env
 
-### Credenciales
+```env
+DRY_RUN=false
+EMAIL_MODE=none
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=recipient@empresa.com
+```
 
-- Email de cuenta de Microsoft 365 empresarial
-- Permisos para recibir emails desde la aplicación
+### Comportamiento
 
-### Software
+- ✅ Ejecuta flujo completo
+- ✅ Procesa y marca items en SQLite
+- ❌ NO envía correos
+- ❌ NO exige configuración SMTP ni Graph
+- 📁 Guarda preview HTML en `output/roadmap_preview.html`
 
-- Python 3.8+
-- pip (gestor de paquetes)
-- Internet Explorer o navegador moderno (para OAuth flow interactivo)
+### Validación de Configuración
+
+- Se valida `EMAIL_FROM` y `EMAIL_TO`
+- No se validan credenciales SMTP ni Graph
+
+### Cuándo usar
+
+- Testing en pre-producción
+- Validación de filtrajes antes de activar envío
+- Acceso a modo log sin dependencias de correo
 
 ---
 
-## 4. PASO 1: CREAR APP REGISTRATION EN MICROSOFT ENTRA ID
+## 5. MODO 3: EMAIL_MODE=smtp (SMTP Genérico)
 
-### Acceso a Azure Portal
+### Descripción
+
+Soporta cualquier servidor SMTP:
+- Microsoft Office 365
+- Exchange On-Premise
+- Exchange Relay (sin autenticación)
+- Servidores SMTP genéricos
+
+### Configuración Básica
+
+```env
+DRY_RUN=false
+EMAIL_MODE=smtp
+EMAIL_FROM=your.email@empresa.com
+EMAIL_TO=recipient@empresa.com
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=your.email@empresa.com
+SMTP_PASSWORD=your_app_password_here
+```
+
+### Escenario A: Office 365 (Autenticado)
+
+```env
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=your.email@empresa.com
+SMTP_PASSWORD=<contraseña_aplicacion>
+```
+
+**Notas:**
+- Obtén contraseña de aplicación desde: https://account.microsoft.com/account/manage-my-microsoft-account
+- NO es tu contraseña de login normal
+- Genera una contraseña de aplicación de 16 caracteres
+
+### Escenario B: Exchange On-Premise (Autenticado)
+
+```env
+SMTP_HOST=exchange.empresa.local
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=empresa\usuario
+SMTP_PASSWORD=contraseña_windows
+```
+
+### Escenario C: Exchange Relay (Sin Autenticación) ⭐
+
+```env
+SMTP_HOST=exchange-relay.empresa.local
+SMTP_PORT=25
+SMTP_USE_TLS=false
+SMTP_USERNAME=
+SMTP_PASSWORD=
+```
+
+**Notas:**
+- Deja `SMTP_USERNAME` y `SMTP_PASSWORD` vacíos
+- Puerto 25 típicamente sin TLS
+- Requiere que el relay esté configurado en Exchange
+
+### Variables SMTP
+
+| Variable | Requerida | Default | Descripción |
+|----------|-----------|---------|-------------|
+| `SMTP_HOST` | ✅ | - | Host del servidor SMTP |
+| `SMTP_PORT` | ⭕ | 587 | Puerto SMTP (25, 587, 465) |
+| `SMTP_USE_TLS` | ⭕ | true | STARTTLS (true) o plain (false) |
+| `SMTP_USERNAME` | ⭕ | - | Usuario SMTP (opcional) |
+| `SMTP_PASSWORD` | ⭕ | - | Contraseña SMTP (opcional) |
+
+### Puertos Comunes
+
+| Puerto | Protocolo | Uso |
+|--------|-----------|-----|
+| 25 | SMTP Plain | Relay sin auth |
+| 587 | SMTP+STARTTLS | Office 365, Exchange auth |
+| 465 | SMTP+SSL | Gmail, algunos servidores |
+
+### Comportamiento
+
+- ✅ Envía correos reales vía SMTP
+- ✅ Marca items en SQLite si envío exitoso
+- ❌ Falla si servidor SMTP inaccesible
+- ❌ Falla si credenciales inválidas (en modo auth)
+
+### Validación de Configuración
+
+- ✅ Se valida `SMTP_HOST` (obligatorio)
+- ✅ Se valida `EMAIL_FROM` y `EMAIL_TO`
+- ⚠️ No se validan credenciales (se detectan en envío)
+
+### Debugging
+
+Activa logs detallados:
+
+```env
+LOG_LEVEL=DEBUG
+```
+
+Logs mostrarán:
+- Conexión a SMTP
+- EHLO/STARTTLS
+- Autenticación
+- Envío de mensaje
+
+---
+
+## 6. MODO 4: EMAIL_MODE=graph (Microsoft Graph OAuth 2.0)
+
+### Descripción
+
+Envía correos usando Microsoft Graph API con autenticación OAuth 2.0. Requiere App Registration en Azure/Entra ID.
+
+**Estado:** Implementado (requiere configuración Azure)
+
+### Requisitos Previos
+
+- ✅ Acceso administrativo a Azure/Entra ID
+- ✅ Permisos para registrar aplicaciones
+- ✅ Cuenta de Microsoft 365 empresarial
+
+### Configuración en .env
+
+```env
+DRY_RUN=false
+EMAIL_MODE=graph
+EMAIL_FROM=your.email@empresa.com
+EMAIL_TO=recipient@empresa.com
+AZURE_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+AZURE_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+OAUTH_REDIRECT_URI=http://localhost
+```
+
+### PASO 1: Crear App Registration
 
 1. Ve a https://portal.azure.com
-2. Inicia sesión con cuenta de administrador de tu tenant
-3. Busca "Azure AD" o "Microsoft Entra ID"
-4. Selecciona "App registrations" en el menú izquierdo
+2. Busca "Microsoft Entra ID" → "App registrations"
+3. Haz clic en "+ New registration"
+4. Rellena:
+   - **Name:** `M365 Roadmap Automation`
+   - **Supported account types:** `Accounts in this organizational directory only`
+5. Haz clic en "Register"
 
-### Crear Nueva Aplicación
+### PASO 2: Guardar Client ID y Tenant ID
 
-1. Haz clic en "+ New registration"
-2. Rellena el formulario:
+En la página de la aplicación creada:
 
-   | Campo | Valor | Notas |
-   |-------|-------|-------|
-   | **Name** | `M365 Roadmap Automation` | Nombre descriptivo |
-   | **Supported account types** | `Accounts in this organizational directory only` | Solo tu tenant |
-   | **Redirect URI** | Déjalo en blanco por ahora | Lo agregaremos en el siguiente paso |
+1. Copia **Application (client) ID** → `AZURE_CLIENT_ID`
+2. Copia **Directory (tenant) ID** → `AZURE_TENANT_ID`
 
-3. Haz clic en "Register"
-4. **Copia y guarda estos valores ahora:**
-   - **Client ID** (Application ID): `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
-   - **Tenant ID** (Directory ID): `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
+### PASO 3: Configurar Redirect URI
 
-### Obtener Tenant ID
+1. Menú izquierdo: "Authentication"
+2. "+ Add a platform" → "Desktop and mobile applications"
+3. Redirect URI: `http://localhost`
+4. Haz clic en "Configure"
 
-Desde la página de la app registration recién creada:
+### PASO 4: Asignar Permisos (API Permissions)
 
-1. En el panel izquierdo, selecciona "Overview"
-2. Busca los campos:
-   - **Application (client) ID** ← Este es el CLIENT_ID
-   - **Directory (tenant) ID** ← Este es el TENANT_ID
-3. Copia ambos valores (similares a `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`)
-
-### Configurar Redirect URI (Paso Crítico)
-
-1. En el menú izquierdo, selecciona "Authentication"
-2. En la sección "Platform configurations", busca "Desktop and mobile applications"
-3. Haz clic en "+ Add a platform"
-4. Selecciona "Desktop and mobile applications"
-5. En "Redirect URIs", ingresa: `http://localhost`
-6. Haz clic en "Configure"
+1. Menú izquierdo: "API permissions"
+2. "+ Add a permission" → "Microsoft Graph"
+3. "Delegated permissions"
+4. Busca: `Mail.Send`
+5. Selecciona ✓ `Mail.Send`
+6. Haz clic en "Add permissions"
+7. **IMPORTANTE:** Haz clic en "Grant admin consent for [Organization]"
 
 **Resultado esperado:**
 ```
-Platform: Desktop and mobile applications
-Redirect URI: http://localhost
+Mail.Send (Delegated) - Status: ✓ Granted for [Organization]
 ```
 
-### Configuración de Autenticación (Recomendado)
+### Comportamiento
 
-En la página "Authentication":
+- ✅ Envía correos vía Microsoft Graph
+- ✅ Autenticación OAuth interactiva (primera vez abre navegador)
+- ✅ Token se cachea en `~/.m365_roadmap/token_cache.json`
+- ✅ Siguiente ejecución no requiere login
+- ✅ Marca items en SQLite si envío exitoso
 
-- Desmarca: "Accounts for any organizational directory" (mantén solo tu tenant)
-- Marca las opciones de flujo permitidas:
-  - ✅ Authorization code flow
-  - ❌ Implicit and hybrid flows (no necesario)
+### Variables Graph/OAuth
 
-**¿Por qué `http://localhost`?**
+| Variable | Requerida | Descripción |
+|----------|-----------|-------------|
+| `AZURE_TENANT_ID` | ✅ | ID del tenant Azure/Entra |
+| `AZURE_CLIENT_ID` | ✅ | ID de aplicación |
+| `OAUTH_REDIRECT_URI` | ⭕ | URI redirección (default: http://localhost) |
 
-- Es un patrón estándar para aplicaciones de escritorio
-- MSAL abre el navegador automáticamente en http://localhost:PUERTO_DINÁMICO
-- No requiere servidor web
-- Totalmente seguro para aplicaciones locales
+### Token Cache
 
----
+- **Ubicación:** `~/.m365_roadmap/token_cache.json` (Windows: `%APPDATA%\.m365_roadmap\`)
+- **Permisos:** 0600 (solo lectura propietario)
+- **Renovación:** Automática si token expira
+- **Limpieza:** Opcional con `reset_database.py`
 
-## 5. PASO 2: CONFIGURAR PERMISOS (DELEGADOS)
+### Debugging
 
-### ¿Qué son los permisos delegados?
+```env
+LOG_LEVEL=DEBUG
+```
 
-- La aplicación actúa en nombre del usuario
-- El usuario autoriza la aplicación la primera vez
-- La aplicación solo accede a los recursos que el usuario aprobó
-- Diferente de "Application Permissions" (que requieren Client Secret)
-
-### Asignar Permiso Mail.Send
-
-1. Desde la página de app registration, ve a "API permissions"
-2. Haz clic en "+ Add a permission"
-3. Selecciona "Microsoft Graph"
-4. Elige "Delegated permissions"
-5. Busca "Mail" y encuentra "Mail.Send"
-6. Marca el checkbox de `Mail.Send`
-7. Haz clic en "Add permissions"
-
-### Agregar Offline Access (Opcional pero Recomendado)
-
-Para obtener un refresh token que permita renovar sesiones sin interacción:
-
-1. Haz clic nuevamente en "+ Add a permission"
-2. Selecciona "Microsoft Graph"
-3. Elige "Delegated permissions"
-4. Busca "offline_access"
-5. Marca el checkbox
-6. Haz clic en "Add permissions"
-
-**Nota:** Con offline_access, los tokens se pueden renovar automáticamente durante 90 días sin requerir login.
+Logs mostrarán:
+- Inicialización MSAL
+- Cache token (hit/miss)
+- Login interactivo
+- Llamadas Graph API
+- Respuestas (200, 401, 403, etc.)
 
 ---
 
-## 6. PASO 3: VERIFICAR CONFIGURACIÓN EN AZURE
+## 7. VALIDACIÓN DE CONFIGURACIÓN
 
-Después de los pasos anteriores, tu app registration debe tener:
+### Matriz de Validación
 
-- ✅ **Client ID:** Guardado
-- ✅ **Tenant ID:** Guardado
-- ✅ **Redirect URI:** `http://localhost` configurado
-- ✅ **Permisos API:** 
-  - `Mail.Send` (delegated)
-  - `offline_access` (delegated, opcional)
-- ✅ **Sin Client Secret:** (no necesario para desktop apps con MSAL)
+| Configuración | DRY_RUN=true | EMAIL_MODE=none | EMAIL_MODE=smtp | EMAIL_MODE=graph |
+|---|---|---|---|---|
+| EMAIL_FROM | ⭕ | ✅ | ✅ | ✅ |
+| EMAIL_TO | ⭕ | ✅ | ✅ | ✅ |
+| SMTP_HOST | ❌ | ❌ | ✅ | ❌ |
+| SMTP_PORT | ❌ | ❌ | ⭕ | ❌ |
+| SMTP_USERNAME | ❌ | ❌ | ⭕ | ❌ |
+| SMTP_PASSWORD | ❌ | ❌ | ⭕ | ❌ |
+| AZURE_TENANT_ID | ❌ | ❌ | ❌ | ✅ |
+| AZURE_CLIENT_ID | ❌ | ❌ | ❌ | ✅ |
+
+**Leyenda:**
+- ✅ Obligatoria
+- ⭕ Opcional
+- ❌ No necesaria
 
 ---
 
-## 7. PASO 4: CONFIGURAR VARIABLES DE ENTORNO
+## 8. FLUJO DE DRY_RUN
 
-### Archivo `.env`
+El flag `DRY_RUN=true` siempre:
 
-En la raíz de tu proyecto, actualiza el archivo `.env`:
+1. ✅ Ejecuta MCP, filtrado, HTML
+2. ❌ No envía correos (independiente de EMAIL_MODE)
+3. ❌ No marca items en SQLite
+4. ✅ Guarda preview HTML
+5. ❌ No valida credenciales de correo
 
-```bash
-# OAuth 2.0 Configuration - Microsoft 365
-OAUTH_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-OAUTH_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-OAUTH_REDIRECT_URI=http://localhost
+```
+DRY_RUN=true (cualquier EMAIL_MODE)
+         │
+         ↓
+    NoOpEmailSender
+         │
+         ├→ Registra: "Email would be sent to X"
+         ├→ NO conecta a SMTP/Graph
+         ├→ NO marca SQLite
+         └→ Retorna True (éxito simulado)
+```
 
-# Email Configuration
-EMAIL_FROM=tu.email@empresa.com
-EMAIL_TO=destinatario@empresa.com
+---
 
-# Logging
+## 9. SEGURIDAD
+
+### Protección de Credenciales
+
+✅ **Archivo .env:**
+- Está en `.gitignore`
+- Nunca se commitea a Git
+- Contiene credenciales reales
+
+❌ **Archivo .env.example:**
+- Público (ejemplo seguro)
+- Sin credenciales reales
+- Muestra estructura
+
+### Logs
+
+✅ **Seguro:**
+- No se imprimen contraseñas
+- No se imprimen tokens
+- Se registran solo operaciones
+
+❌ **Peligro:**
+- Variables raw en debug
+- Headers de API sin sanitizar
+
+### Token Cache (Graph)
+
+✅ **Protegido:**
+- Permisos 0600 (solo propietario)
+- Guardado en directorio home privado
+- Renovación automática
+
+---
+
+## 10. SOLUCIÓN DE PROBLEMAS
+
+### "Missing SMTP_HOST"
+
+**Causa:** `EMAIL_MODE=smtp` pero `SMTP_HOST` no está configurado
+
+**Solución:**
+```env
+EMAIL_MODE=smtp
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+```
+
+### "SMTP authentication failed"
+
+**Causa:** Usuario/contraseña incorrectos (modo smtp con auth)
+
+**Solución:**
+1. Verifica `SMTP_USERNAME` y `SMTP_PASSWORD`
+2. Para Office 365: usa contraseña de aplicación, no login
+3. Prueba conexión manual con telnet:
+   ```bash
+   telnet smtp.office365.com 587
+   ```
+
+### "SMTP connection refused"
+
+**Causa:** Servidor SMTP inaccesible o puerto incorrecto
+
+**Solución:**
+1. Verifica conectividad: `ping smtp.office365.com`
+2. Verifica puerto: puerto 25/587 vs 465
+3. Revisa firewall/proxy corporativo
+
+### "Graph authentication failed"
+
+**Causa:** Token OAuth inválido o permisos insuficientes
+
+**Solución:**
+1. Verifica `AZURE_TENANT_ID` y `AZURE_CLIENT_ID`
+2. Comprueba que tengas `Mail.Send` permission con "Grant admin consent"
+3. Limpia cache:
+   ```bash
+   rm ~/.m365_roadmap/token_cache.json  # Linux/Mac
+   rmdir %APPDATA%\.m365_roadmap\       # Windows
+   ```
+4. Ejecuta nuevamente para re-autenticar
+
+### "Permission denied (403)"
+
+**Causa:** Aplicación no tiene permisos Mail.Send
+
+**Solución:**
+1. Ve a Azure Portal → tu aplicación
+2. API permissions → Verifica `Mail.Send` tiene ✓ "Granted"
+3. Si no: haz clic en "Grant admin consent for [Organization]"
+
+---
+
+## 11. EJEMPLOS DE CONFIGURACIÓN COMPLETA
+
+### Ejemplo 1: Desarrollo (DRY_RUN)
+
+```env
+DRY_RUN=true
+EMAIL_MODE=none
 LOG_LEVEL=INFO
+```
+
+Ejecutar: `python main.py`
+
+Resultado: ✅ Flujo completo, ❌ sin correos, ❌ sin validación email
+
+### Ejemplo 2: Office 365 Producción
+
+```env
 DRY_RUN=false
+EMAIL_MODE=smtp
+EMAIL_FROM=roadmap@empresa.onmicrosoft.com
+EMAIL_TO=team@empresa.com
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=roadmap@empresa.onmicrosoft.com
+SMTP_PASSWORD=AbCd!234XyZw567*aBcD
+LOG_LEVEL=INFO
 ```
 
-### ⚠️ IMPORTANTE: NO INCLUIR SECRETOS
+### Ejemplo 3: Exchange Relay On-Prem
 
-- ❌ NO incluir contraseñas
-- ❌ NO incluir tokens
-- ❌ NO incluir Client Secret (no se usa en desktop apps)
-- ✅ Los tokens se guardan automáticamente en `~/.m365_roadmap/token_cache.json` en login
-
-### Valores Reales vs. Placeholders
-
-Reemplaza los siguientes valores con tus valores reales de Azure:
-
-- `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (CLIENT_ID y TENANT_ID) → Tus valores de Azure
-- `tu.email@empresa.com` → Tu email de Microsoft 365
-- `destinatario@empresa.com` → Email de destino de los reportes
-
----
-
-## 8. PASO 5: INSTALAR DEPENDENCIAS
-
-Desde la terminal, en la raíz del proyecto:
-
-```bash
-pip install -r requirements.txt
+```env
+DRY_RUN=false
+EMAIL_MODE=smtp
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=team@empresa.com
+SMTP_HOST=mail.empresa.local
+SMTP_PORT=25
+SMTP_USE_TLS=false
+LOG_LEVEL=INFO
 ```
 
-Esto instala:
-- `msal>=1.28.0` (Microsoft Authentication Library)
-- `aiohttp>=3.9.1` (Cliente HTTP asincrónico)
-- `python-dotenv>=1.0.0` (Carga de .env)
-- Otras dependencias existentes
+**Nota:** Sin `SMTP_USERNAME`/`SMTP_PASSWORD` (relay abierto)
 
----
+### Ejemplo 4: Microsoft Graph
 
-## 9. PASO 6: PRIMER INICIO DE SESIÓN (AUTENTICACIÓN INTERACTIVA)
-
-El primer inicio de sesión requiere interacción del usuario (navegador):
-
-### Ejecutar Diagnóstico
-
-```bash
-python test_m365_oauth_diagnosis.py
-```
-
-### Flujo Esperado
-
-1. **Script se inicia**
-   ```
-   Inicializando OAuth Manager...
-   Verificando token cache existente...
-   ```
-
-2. **Se abre navegador automáticamente**
-   - URL: Algo como `https://login.microsoftonline.com/...`
-   - Pantalla: "Sign in to your account"
-
-3. **Usuario ingresa credenciales**
-   - Email: tu.email@empresa.com
-   - Contraseña: Tu contraseña de Microsoft 365
-
-4. **Se pide consentimiento**
-   - Título: "M365 Roadmap Automation wants to access your mail"
-   - Permisos solicitados: "Send mail as you" (Mail.Send)
-   - Botón: "Accept"
-
-5. **Usuario acepta**
-   - Pantalla redirecciona a `http://localhost` (página vacía, es normal)
-   - MSAL captura el código de autorización
-
-6. **Token se obtiene y almacena**
-   - Ubicación: `~/.m365_roadmap/token_cache.json`
-   - Permisos: Solo lectura/escritura del usuario (0600)
-
-7. **Diagnóstico finaliza**
-   ```
-   [OK] Usuario autenticado: usuario@empresa.com
-   [OK] Tenant: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   [OK] Scopes autorizados: Mail.Send, offline_access
-   [OK] Conectividad a Microsoft Graph: EXITOSA
-   ```
-
----
-
-## 10. PASO 7: RENOVACIÓN AUTOMÁTICA DE TOKENS
-
-### Access Token (Corta duración)
-
-- **Duración:** 1 hora
-- **Almacenamiento:** Cache persistente
-- **Renovación:** Automática por MSAL
-
-### Refresh Token (Larga duración)
-
-- **Duración:** 90 días
-- **Almacenamiento:** Cache persistente (encriptado por MSAL)
-- **Automatización:** Ejecutar la aplicación antes de 90 días sin interacción
-
-### Tokens Expirados (Después de 90 días)
-
-Si la aplicación no se ejecuta durante 90 días:
-
-1. El refresh token expira
-2. En la siguiente ejecución, se requiere login interactivo nuevamente
-3. Ejecutar: `python test_m365_oauth_diagnosis.py --reauth`
-4. Sigue el mismo flujo del Paso 6
-
----
-
-## 11. PASO 8: PRUEBA DE AUTENTICACIÓN
-
-Verifica que la autenticación funciona sin errores:
-
-```bash
-python test_m365_oauth_diagnosis.py
-```
-
-### Salida Esperada
-
-```
-================================================================================
-DIAGNÓSTICO OAUTH - MICROSOFT GRAPH
-================================================================================
-
-1. INICIALIZANDO OAUTH MANAGER
-   [OK] MSAL configurado correctamente
-
-2. VERIFICANDO TOKEN CACHE
-   [OK] Cache encontrado en: ~/.m365_roadmap/token_cache.json
-
-3. ADQUIRIENDO TOKEN
-   [OK] Token adquirido silenciosamente (sin interacción)
-
-4. INFORMACIÓN DE CUENTA
-   Usuario: usuario@empresa.com
-   Tenant ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-   Scopes: https://graph.microsoft.com/.default offline_access
-
-5. PROBANDO CONECTIVIDAD A MICROSOFT GRAPH
-   [OK] Conectividad: EXITOSA
-   Endpoint: POST https://graph.microsoft.com/v1.0/me/sendMail
-
-================================================================================
-STATUS: AUTENTICACIÓN VALIDADA
-================================================================================
+```env
+DRY_RUN=false
+EMAIL_MODE=graph
+EMAIL_FROM=roadmap@empresa.com
+EMAIL_TO=team@empresa.com
+AZURE_TENANT_ID=12345678-1234-1234-1234-123456789012
+AZURE_CLIENT_ID=87654321-4321-4321-4321-210987654321
+OAUTH_REDIRECT_URI=http://localhost
+LOG_LEVEL=INFO
 ```
 
 ---
 
-## 12. PASO 9: PRUEBA DE ENVÍO DE EMAIL
+## 12. MIGRACIÓN DE CONFIGURACIÓN ANTIGUA
 
-**IMPORTANTE:** Esta prueba requiere que el script de diagnóstico haya completado exitosamente.
+Si usabas `EMAIL_PASSWORD` (formato antiguo):
 
-### Crear Script de Prueba
-
-En la raíz del proyecto, crea un archivo `test_email_send.py`:
-
-```python
-#!/usr/bin/env python3
-import asyncio
-from src.oauth_manager import OAuthManager
-from src.graph_sender import GraphEmailSender
-
-async def test_send_email():
-    oauth = OAuthManager()
-    sender = GraphEmailSender(oauth)
-    
-    # Obtener token
-    token = await oauth.get_token()
-    if not token:
-        print("[ERROR] No se pudo obtener token")
-        return
-    
-    # Prueba de envío
-    try:
-        result = await sender.send_email(
-            to_address="tu.email@empresa.com",
-            subject="PRUEBA: Email desde Microsoft Graph",
-            html_body="<h1>Prueba de envío</h1><p>Este es un email de prueba desde OAuth 2.0.</p>"
-        )
-        
-        print(f"[OK] Email enviado exitosamente")
-        print(f"    ID de mensaje: {result.get('id')}")
-    except Exception as e:
-        print(f"[ERROR] Fallo en envío: {e}")
-
-if __name__ == "__main__":
-    asyncio.run(test_send_email())
+**Antes:**
+```env
+EMAIL_PASSWORD=password123
 ```
 
-### Ejecutar Prueba
-
-```bash
-python test_email_send.py
+**Ahora:**
+```env
+EMAIL_MODE=smtp
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=your.email@empresa.com
+SMTP_PASSWORD=password123
 ```
 
-### Resultado Esperado
-
-- Email aparece en la bandeja de salida de tu cuenta Microsoft 365
-- Asunto: "PRUEBA: Email desde Microsoft Graph"
-- Contenido: HTML con título y párrafo
+O si prefieres mantener compatibilidad, el código fallback automáticamente a `EMAIL_PASSWORD` si `SMTP_PASSWORD` no está configurado.
 
 ---
 
-## 13. ACTIVAR ENVÍO REAL EN PRODUCCIÓN
+## 13. REFERENCIAS
 
-Una vez validada la autenticación y el envío, la aplicación está lista para:
+- **Microsoft Graph API:** https://docs.microsoft.com/en-us/graph/api/user-sendmail
+- **MSAL Python:** https://msal-python.readthedocs.io/
+- **Office 365 SMTP:** https://docs.microsoft.com/en-us/exchange/clients-and-mobile-in-exchange-online/authenticated-client-smtp-submission
+- **Azure App Registration:** https://docs.microsoft.com/en-us/azure/active-directory/develop/quickstart-register-app
 
-1. **Ejecutarse mensualmente:**
-   - Obtiene roadmap de MRC MCP
-   - Filtra por productos
-   - Genera HTML
-   - **Envía email real** mediante Microsoft Graph
-
-2. **Integración en workflow:**
-   - Modificar `src/email_sender.py` para usar `GraphEmailSender` en lugar de SMTP
-   - O crear nuevo flujo exclusivo para Graph API
-   - Actualizar `main_workflow.py` para invocar el nuevo código
-
-3. **Automatización:**
-   - Windows Task Scheduler (ver `EJECUCION_AUTOMATICA_MENSUAL.md`)
-   - O Linux cron equivalente
-
----
-
-## 14. SOLUCIÓN DE PROBLEMAS
-
-### Error: "AADSTS700016: Application with identifier was not found"
-
-**Causa:** Client ID incorrecto o aplicación no registrada
-
-**Solución:**
-1. Verifica que `OAUTH_CLIENT_ID` en `.env` sea exacto
-2. Ve a Azure Portal → App registrations → tu app
-3. Copia nuevamente el Client ID
-4. Actualiza `.env`
-
-### Error: "AADSTS65001: User or admin has not consented to use application"
-
-**Causa:** El usuario no ha aceptado los permisos
-
-**Solución:**
-1. Ejecuta nuevamente: `python test_m365_oauth_diagnosis.py`
-2. Se abrirá el navegador
-3. Acepta los permisos en la pantalla de consentimiento
-
-### Error: "Invalid redirect_uri"
-
-**Causa:** Redirect URI no coincide entre .env y Azure
-
-**Solución:**
-1. En Azure Portal, verifica que `http://localhost` esté configurado en Authentication
-2. En `.env`, asegúrate que `OAUTH_REDIRECT_URI=http://localhost`
-3. No incluir puerto específico (MSAL asigna uno dinámicamente)
-
-### Error: "The user has not consented to Mail.Send permission"
-
-**Causa:** Permiso Mail.Send no asignado a la app
-
-**Solución:**
-1. Ve a Azure Portal → tu app registration → API permissions
-2. Verifica que "Mail.Send" esté en la lista
-3. Si no está, haz clic en "+ Add a permission"
-4. Microsoft Graph → Delegated → Mail.Send → Add
-5. Ejecuta nuevamente el diagnóstico y acepta permisos
-
-### Token Expirado Después de 90 Días
-
-**Síntoma:** Error 401 Unauthorized en primer intento del mes 4+
-
-**Solución:**
-```bash
-python test_m365_oauth_diagnosis.py --reauth
-```
-
-Esto fuerza un login interactivo nuevo, actualiza el cache y reinicia el ciclo de 90 días.
-
----
-
-## 15. CONSIDERACIONES DE SEGURIDAD
-
-### ✅ SEGURO
-
-- ✅ Tokens almacenados en cache encriptado (MSAL maneja encriptación)
-- ✅ Token cache con permisos 0600 (solo usuario puede leer)
-- ✅ Sin Client Secret en código (no se usa en desktop apps)
-- ✅ Sin contraseñas en .env
-- ✅ Permisos delegados (Mail.Send únicamente)
-- ✅ Redirect URI local (http://localhost)
-
-### ⚠️ PRECAUCIONES
-
-- ⚠️ Token cache en `~/.m365_roadmap/` → Asegura que directorio está protegido
-- ⚠️ `.env` nunca debe commitearse a control de versiones
-- ⚠️ No compartir valores de CLIENT_ID o TENANT_ID públicamente
-- ⚠️ No ejecutar script con permisos "Run as Administrator" innecesariamente
-
-### 🔐 MEJOR PRÁCTICA
-
-```bash
-# Proteger el directorio de cache de tokens
-chmod 700 ~/.m365_roadmap
-```
-
----
-
-## 16. ARQUITECTURA ACTUAL vs. ANTERIOR
-
-### ❌ ARQUITECTURA ANTERIOR (DESCARTADA)
-
-```
-SMTP Básico (smtp.office365.com:587)
-    ↓
-Autenticación: usuario@empresa.com + contraseña de aplicación
-    ↓
-Ventajas: Simple
-    ↓
-Desventajas:
-  - Menor seguridad
-  - Contraseña en .env
-  - No permite offline_access
-  - Problemas con autenticación multifactor
-```
-
-### ✅ ARQUITECTURA ACTUAL (OAUTH 2.0)
-
-```
-OAuth 2.0 + MSAL
-    ↓
-Autenticación: Login interactivo + consentimiento delegado
-    ↓
-Token Cache: Almacenamiento persistente y encriptado
-    ↓
-Microsoft Graph API: /me/sendMail
-    ↓
-Ventajas:
-  - Mayor seguridad
-  - Sin contraseñas
-  - Offline access (90 días)
-  - Compatible con MFA
-  - Tokens automáticamente renovados
-```
-
----
-
-## 17. PRÓXIMOS PASOS
-
-1. **Verificar permisos administrativos:**
-   - ¿Tienes acceso a Microsoft Entra ID?
-   - ¿Puedes registrar aplicaciones?
-
-2. **Crear App Registration** (Paso 1-5 de esta guía)
-
-3. **Obtener Client ID y Tenant ID**
-
-4. **Actualizar `.env`**
-
-5. **Ejecutar diagnóstico** (Paso 9)
-
-6. **Validar envío de email** (Paso 10)
-
-7. **Activar en workflow** (Paso 13)
-
-8. **Automatizar ejecución mensual** (Ver `EJECUCION_AUTOMATICA_MENSUAL.md`)
-
----
-
-## REFERENCIAS
-
-- [Microsoft Entra ID](https://entra.microsoft.com/)
-- [Microsoft Graph API - Send Mail](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0)
-- [MSAL Python](https://github.com/AzureAD/microsoft-authentication-library-for-python)
-- [OAuth 2.0](https://oauth.net/2/)
-
----
-
-**Fin del documento de configuración OAuth 2.0**
