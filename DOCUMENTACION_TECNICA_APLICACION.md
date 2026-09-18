@@ -651,19 +651,6 @@ RSS_MONTHS_BACK=1  # Últimos 30 días (1 mes)
 
 Cambiar a `RSS_MONTHS_BACK=3` incluiría últimos 90 días.
 
-### Ejemplo de Aplicación
-
-Hoy: 2026-09-16
-
-Fecha límite (RSS_MONTHS_BACK=1): 2026-08-17
-
-- ✅ Elemento creado: 2026-09-15 → INCLUIDO
-- ✅ Elemento creado: 2026-08-20 → INCLUIDO
-- ❌ Elemento creado: 2026-08-10 → DESCARTADO
-- ❌ Elemento creado: 2026-07-20 → DESCARTADO
-
----
-
 ## SQLITE Y DEDUPLICACIÓN
 
 ### ¿Por Qué SQLite?
