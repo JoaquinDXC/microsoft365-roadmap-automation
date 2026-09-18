@@ -148,15 +148,6 @@ SMTP / Microsoft Graph (email)
 - ✅ Reducir dependencias externas innecesarias
 - ✅ Implementar envío SMTP de Office 365
 
-### Evoluciones Futuras 🚀
-
-- 🔄 **OAuth 2.0 / Microsoft Graph** - autenticación moderna en lugar de SMTP
-- 🔄 **Ejecución automática mensual** - Task Scheduler (Windows) o Cron (Linux)
-- 🔄 **Monitorización** - alertas si falla la ejecución automática
-- 🔄 **Histórico de elementos** - dashboard web con histórico de cambios
-- 🔄 **Configuración de filtros dinámica** - cambiar productos sin modificar código
-- 🔄 **Más productos** - extender a otros productos Microsoft
-
 ---
 
 ## ARQUITECTURA GENERAL
@@ -2364,10 +2355,5 @@ Luego ejecutar con DRY_RUN=true para probar.
 2. **Información limitada por MCP**
    - No todas las propiedades de roadmap están disponibles
    - **Solución:** Esperar actualizaciones de Microsoft
-
-3. **Sin análisis histórico**
-   - BD registra "procesado" pero no cambios
-   - Imposible: Ver cómo evolucionó un elemento
-   - **Solución futura:** Tabla de histórico
 
 ---
